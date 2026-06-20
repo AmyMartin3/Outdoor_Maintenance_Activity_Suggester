@@ -7,9 +7,9 @@ import pandas as pd
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Load environment variables from root .env file
+# Load environment variables from root .env file (override existing env vars)
 env_path = Path(__file__).parent.parent / '.env'
-load_dotenv(env_path)
+load_dotenv(env_path, override=True)
 
 # Initialize Supabase client
 def get_supabase_client() -> Client:
@@ -30,25 +30,60 @@ def get_maintenance_schedule() -> pd.DataFrame:
     """
     try:
         supabase = get_supabase_client()
-
-        # Query the v_powerbi_maintenance_schedule view
-        response = supabase.table("v_powerbi_maintenance_schedule").select("*").execute()
-
-        if response.data:
-            df = pd.DataFrame(response.data)
-            # Convert timestamp columns
-            if 'weather_time' in df.columns:
-                df['weather_time'] = pd.to_datetime(df['weather_time'])
-            if 'weather_date' in df.columns:
-                df['weather_date'] = pd.to_datetime(df['weather_date'])
-            return df
-        else:
+        
+        # Query the tables directly and join locally instead of using the view
+        # (view may have permission issues with RLS)
+        weather_response = supabase.table("hourly_weather_data")\
+            .select("*")\
+            .order("Time", desc=True)\
+            .limit(24)\
+            .execute()
+        
+        activities_response = supabase.table("dim_maintenance_activities")\
+            .select("*")\
+            .execute()
+        
+        if not weather_response.data or not activities_response.data:
             return pd.DataFrame()
-
+        
+        # Convert to DataFrames
+        weather_df = pd.DataFrame(weather_response.data)
+        activities_df = pd.DataFrame(activities_response.data)
+        
+        # Convert timestamp
+        if 'Time' in weather_df.columns:
+            weather_df['Time'] = pd.to_datetime(weather_df['Time'])
+        
+        # Match activities to weather conditions
+        recommendations = []
+        for _, weather in weather_df.iterrows():
+            for _, activity in activities_df.iterrows():
+                # Check if weather matches activity constraints
+                temp = weather.get('temperature_2m_f', 0)
+                precip = weather.get('precipitation_prob_pct', 0)
+                wind = weather.get('wind_speed_10m_mph', 0)
+                
+                if (activity.get('min_temp_f', 0) <= temp <= activity.get('max_temp_f', 200) and
+                    precip <= activity.get('max_precipitation_prob_pct', 100) and
+                    wind <= activity.get('max_wind_speed_mph', 100)):
+                    
+                    recommendations.append({
+                        'weather_time': weather.get('Time'),
+                        'weather_date': pd.to_datetime(weather.get('Time')).date() if weather.get('Time') else None,
+                        'hour_of_day': pd.to_datetime(weather.get('Time')).hour if weather.get('Time') else None,
+                        'temperature_f': temp,
+                        'precipitation_prob_pct': precip,
+                        'wind_speed_mph': wind,
+                        'weather_description': 'Good conditions',
+                        'activity_name': activity.get('activity_name'),
+                        'is_recommended': 1
+                    })
+        
+        return pd.DataFrame(recommendations) if recommendations else pd.DataFrame()
+            
     except Exception as e:
         err_text = str(e)
-        if 'Unregistered API key' in err_text or 'code':
-            # Provide a clear actionable message for 401-like failures
+        if 'Unregistered API key' in err_text or '401' in err_text:
             raise RuntimeError(
                 "Supabase authentication failed: your anon API key appears unregistered or invalid.\n"
                 "Please regenerate the Anon Public Key in Supabase (Settings → API) and update the .env file with the new key."

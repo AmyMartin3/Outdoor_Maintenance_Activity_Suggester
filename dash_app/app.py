@@ -9,14 +9,16 @@ import plotly.graph_objects as go
 import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
+from pathlib import Path
 from supabase_client import (
     get_maintenance_schedule, 
     get_current_weather,
     get_maintenance_activities
 )
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from root .env file (override existing env vars)
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(env_path, override=True)
 
 # Initialize the Dash app
 app = dash.Dash(__name__)
@@ -98,6 +100,11 @@ app.layout = html.Div([
 def update_data(n_clicks, n_intervals):
     """Fetch data from Supabase"""
     try:
+        import sys
+        print(f"Python path: {sys.path}", file=__import__('sys').stderr)
+        print(f"Current dir: {os.getcwd()}", file=__import__('sys').stderr)
+        print(f"SUPABASE_URL: {os.getenv('SUPABASE_URL')}", file=__import__('sys').stderr)
+        
         maintenance_df = get_maintenance_schedule()
         weather_df = get_current_weather()
         
@@ -108,8 +115,10 @@ def update_data(n_clicks, n_intervals):
         
         return maintenance_data, weather_data, f"Last updated: {last_updated}"
     except Exception as e:
-        print(f"Error updating data: {e}")
-        return None, None, f"Error loading data: {str(e)}"
+        import traceback
+        error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg, file=__import__('sys').stderr)
+        return None, None, error_msg
 
 
 @app.callback(
